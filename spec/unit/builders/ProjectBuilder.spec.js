@@ -20,8 +20,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 const rewire = require('rewire');
-
-const CordovaError = require('cordova-common').CordovaError;
+const { isWindows } = require('../../../lib/utils');
 
 describe('ProjectBuilder', () => {
     const rootDir = '/root';
@@ -55,40 +54,40 @@ describe('ProjectBuilder', () => {
 
         it('should set release argument', () => {
             const args = builder.getArgs('release', {});
-            expect(args[0]).toBe('cdvBuildRelease');
+            expect(args[args.length - 1]).toBe('cdvBuildRelease');
         });
 
         it('should set debug argument', () => {
             const args = builder.getArgs('debug', {});
-            expect(args[0]).toBe('cdvBuildDebug');
+            expect(args[args.length - 1]).toBe('cdvBuildDebug');
         });
 
         it('should set apk release', () => {
             const args = builder.getArgs('release', {
                 packageType: 'apk'
             });
-            expect(args[0]).withContext(args).toBe('cdvBuildRelease');
+            expect(args[args.length - 1]).withContext(args).toBe('cdvBuildRelease');
         });
 
         it('should set apk debug', () => {
             const args = builder.getArgs('debug', {
                 packageType: 'apk'
             });
-            expect(args[0]).withContext(args).toBe('cdvBuildDebug');
+            expect(args[args.length - 1]).withContext(args).toBe('cdvBuildDebug');
         });
 
         it('should set bundle release', () => {
             const args = builder.getArgs('release', {
                 packageType: 'bundle'
             });
-            expect(args[0]).withContext(args).toBe(':app:bundleRelease');
+            expect(args[args.length - 1]).withContext(args).toBe(':app:bundleRelease');
         });
 
         it('should set bundle debug', () => {
             const args = builder.getArgs('debug', {
                 packageType: 'bundle'
             });
-            expect(args[0]).withContext(args).toBe(':app:bundleDebug');
+            expect(args[args.length - 1]).withContext(args).toBe(':app:bundleDebug');
         });
 
         it('should add architecture if it is passed', () => {
@@ -102,14 +101,14 @@ describe('ProjectBuilder', () => {
             const args = builder.getArgs('clean', {
                 packageType: 'apk'
             });
-            expect(args[0]).toBe('clean');
+            expect(args[args.length - 1]).toBe('clean');
         });
 
         it('should clean bundle', () => {
             const args = builder.getArgs('clean', {
                 packageType: 'bundle'
             });
-            expect(args[0]).toBe('clean');
+            expect(args[args.length - 1]).toBe('clean');
         });
 
         describe('should accept extra arguments', () => {
@@ -130,40 +129,21 @@ describe('ProjectBuilder', () => {
         });
     });
 
-    describe('runGradleWrapper', () => {
-        it('should run the provided gradle command if a gradle wrapper does not already exist', () => {
-            spyOn(fs, 'existsSync').and.returnValue(false);
-            builder.runGradleWrapper('/my/sweet/gradle');
-            expect(execaSpy).toHaveBeenCalledWith('/my/sweet/gradle', jasmine.any(Array), jasmine.any(Object));
+    describe('installGradleWrapper', () => {
+        beforeEach(() => {
+            execaSpy.and.resolveTo();
         });
 
-        it('should do nothing if a gradle wrapper exists in the project directory', () => {
-            spyOn(fs, 'existsSync').and.returnValue(true);
-            builder.runGradleWrapper('/my/sweet/gradle');
-            expect(execaSpy).not.toHaveBeenCalledWith('/my/sweet/gradle', jasmine.any(Array), jasmine.any(Object));
-        });
-    });
-
-    describe('extractRealProjectNameFromManifest', () => {
-        it('should get the project name from the Android Manifest', () => {
-            const projectName = 'unittestproject';
-            const projectId = `io.cordova.${projectName}`;
-            const manifest = `<?xml version="1.0" encoding="utf-8"?>
-            <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="${projectId}"></manifest>`;
-
-            spyOn(fs, 'readFileSync').and.returnValue(manifest);
-
-            expect(builder.extractRealProjectNameFromManifest()).toBe(projectName);
+        it('should run gradle wrapper 8.7', async () => {
+            await builder.installGradleWrapper('8.7');
+            expect(execaSpy).toHaveBeenCalledWith('gradle', ['-p', path.normalize('/root/tools'), 'wrapper', '--gradle-version', '8.7'], jasmine.any(Object));
         });
 
-        it('should throw an error if there is no package in the Android manifest', () => {
-            const manifest = `<?xml version="1.0" encoding="utf-8"?>
-            <manifest xmlns:android="http://schemas.android.com/apk/res/android"></manifest>`;
-
-            spyOn(fs, 'readFileSync').and.returnValue(manifest);
-
-            expect(() => builder.extractRealProjectNameFromManifest()).toThrow(jasmine.any(CordovaError));
+        it('CORDOVA_ANDROID_GRADLE_DISTRIBUTION_URL should override gradle version', async () => {
+            process.env.CORDOVA_ANDROID_GRADLE_DISTRIBUTION_URL = 'https://dist.local';
+            await builder.installGradleWrapper('8.7');
+            delete process.env.CORDOVA_ANDROID_GRADLE_DISTRIBUTION_URL;
+            expect(execaSpy).toHaveBeenCalledWith('gradle', ['-p', path.normalize('/root/tools'), 'wrapper', '--gradle-distribution-url', 'https://dist.local'], jasmine.any(Object));
         });
     });
 
@@ -196,12 +176,18 @@ describe('ProjectBuilder', () => {
 
             builder.build({});
 
-            expect(execaSpy).toHaveBeenCalledWith(path.join(rootDir, 'gradlew'), testArgs, jasmine.anything());
+            let gradle = path.join(rootDir, 'tools', 'gradlew');
+            if (isWindows()) {
+                gradle += '.bat';
+            }
+
+            expect(execaSpy).toHaveBeenCalledWith(gradle, testArgs, jasmine.anything());
         });
 
         it('should reject if the spawn fails', () => {
             const errorMessage = 'Test error';
             execaSpy.and.rejectWith(new Error(errorMessage));
+            builder.getArgs.and.returnValue([]);
 
             return builder.build({}).then(
                 () => fail('Unexpectedly resolved'),
@@ -218,6 +204,7 @@ describe('ProjectBuilder', () => {
             ProjectBuilder.__set__('check_reqs', checkReqsSpy);
             checkReqsSpy.check_android_target.and.resolveTo();
             execaSpy.and.rejectWith(testError);
+            builder.getArgs.and.returnValue([]);
 
             return builder.build({}).then(
                 () => fail('Unexpectedly resolved'),
@@ -251,8 +238,13 @@ describe('ProjectBuilder', () => {
             const gradleArgs = ['test', 'args', '-f'];
             builder.getArgs.and.returnValue(gradleArgs);
 
+            let gradle = path.join(rootDir, 'tools', 'gradlew');
+            if (isWindows()) {
+                gradle += '.bat';
+            }
+
             return builder.clean(opts).then(() => {
-                expect(execaSpy).toHaveBeenCalledWith(path.join(rootDir, 'gradlew'), gradleArgs, jasmine.anything());
+                expect(execaSpy).toHaveBeenCalledWith(gradle, gradleArgs, jasmine.anything());
             });
         });
 
